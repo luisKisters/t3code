@@ -24,6 +24,15 @@ function reportScratchFailure(error: unknown) {
   );
 }
 
+/** `current` first when it is one of the offering environments; the rest keep their order. */
+export function orderScratchEnvironmentIds(
+  offering: ReadonlyArray<EnvironmentId>,
+  current: EnvironmentId | null,
+): EnvironmentId[] {
+  if (current === null || !offering.includes(current)) return [...offering];
+  return [current, ...offering.filter((environmentId) => environmentId !== current)];
+}
+
 /**
  * Threads without a project live in the environment's scratch project, a
  * plain folder the server owns (users see it as "No project"). The server
@@ -44,6 +53,18 @@ export function useScratchProject() {
         : null;
     },
     [environments],
+  );
+
+  /** Every connected environment that offers a scratch folder, `current` first. */
+  const scratchEnvironmentIds = useCallback(
+    (current: EnvironmentId | null): EnvironmentId[] =>
+      orderScratchEnvironmentIds(
+        environments
+          .map((entry) => entry.environmentId)
+          .filter((environmentId) => scratchWorkspaceRootFor(environmentId) !== null),
+        current,
+      ),
+    [environments, scratchWorkspaceRootFor],
   );
 
   // A thread without a project starts on the machine the user is working on,
@@ -94,5 +115,11 @@ export function useScratchProject() {
     [handleNewThread, openScratchProject],
   );
 
-  return { scratchWorkspaceRootFor, scratchEnvironmentId, openScratchProject, startScratchThread };
+  return {
+    scratchWorkspaceRootFor,
+    scratchEnvironmentId,
+    scratchEnvironmentIds,
+    openScratchProject,
+    startScratchThread,
+  };
 }

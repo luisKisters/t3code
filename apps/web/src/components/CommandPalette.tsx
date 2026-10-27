@@ -232,29 +232,38 @@ function projectFavicon(project: Project) {
   return <ProjectFavicon project={project} className="size-4" />;
 }
 
+interface EnvironmentLocation {
+  readonly kind: "local" | "remote";
+  readonly label: string;
+  readonly machine: EnvironmentMachineKind;
+}
+
+/** Where a row lives: a remote's machine icon, then its environment label. */
+function EnvironmentLocationLabel(props: { readonly location: EnvironmentLocation }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1">
+      {props.location.kind === "remote" ? (
+        <EnvironmentMachineIcon
+          aria-hidden
+          kind={props.location.machine}
+          className={COMMAND_PALETTE_META_ICON_CLASS}
+        />
+      ) : null}
+      <span className="truncate">{props.location.label}</span>
+    </span>
+  );
+}
+
 function ProjectSearchDescription(props: {
   readonly environmentLabels: ReadonlyArray<string>;
   readonly grouped: boolean;
-  readonly location: {
-    readonly kind: "local" | "remote";
-    readonly label: string;
-    readonly machine: EnvironmentMachineKind;
-  };
+  readonly location: EnvironmentLocation;
   readonly workspaceRoot: string;
 }) {
   if (!props.grouped) {
     return (
       <span className="flex min-w-0 items-center gap-1">
-        <span className="inline-flex min-w-0 items-center gap-1">
-          {props.location.kind === "remote" ? (
-            <EnvironmentMachineIcon
-              aria-hidden
-              kind={props.location.machine}
-              className={COMMAND_PALETTE_META_ICON_CLASS}
-            />
-          ) : null}
-          <span className="truncate">{props.location.label}</span>
-        </span>
+        <EnvironmentLocationLabel location={props.location} />
         <CommandPaletteMetaDot />
         <span className="truncate">{props.workspaceRoot}</span>
       </span>
@@ -722,7 +731,12 @@ function OpenCommandPaletteDialog(props: {
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
-  const { scratchEnvironmentId, scratchWorkspaceRootFor, startScratchThread } = useScratchProject();
+  const {
+    scratchEnvironmentId,
+    scratchEnvironmentIds,
+    scratchWorkspaceRootFor,
+    startScratchThread,
+  } = useScratchProject();
   const lookupRepository = useAtomQueryRunner(sourceControlEnvironment.repository, {
     reportFailure: false,
   });
@@ -1311,11 +1325,46 @@ function OpenCommandPaletteDialog(props: {
     ],
   );
 
+  // One "No project" item per environment that offers a scratch folder, the
+  // current one first. "New thread in..." and the root submenu both list these.
+  const scratchThreadItems = useMemo(
+    (): CommandPaletteActionItem[] =>
+      scratchEnvironmentIds(currentProjectEnvironmentId ?? primaryEnvironmentId).map(
+        (environmentId): CommandPaletteActionItem => {
+          const location = projectEnvironmentLocationById.get(environmentId) ?? {
+            kind: "remote" as const,
+            label: "Remote",
+            machine: "server" as const,
+          };
+          return {
+            kind: "action",
+            value: `new-thread-in:no-project:${environmentId}`,
+            searchTerms: ["no project", "without project", "none", location.label],
+            title: "No project",
+            description: <EnvironmentLocationLabel location={location} />,
+            icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
+            ...(environmentId === scratchTargetEnvironmentId
+              ? { shortcutCommand: "chat.newWithoutProject" as const }
+              : {}),
+            run: () => startScratchThread(environmentId),
+          };
+        },
+      ),
+    [
+      currentProjectEnvironmentId,
+      primaryEnvironmentId,
+      projectEnvironmentLocationById,
+      scratchEnvironmentIds,
+      scratchTargetEnvironmentId,
+      startScratchThread,
+    ],
+  );
+
   const projectThreadItems = useMemo(
     () =>
       enumerateCommandPaletteItems([
         ...buildProjectActionItems({
-          // The no-project home shows once, as the "No project" item below.
+          // Scratch projects appear as the "No project" items below instead.
           projects: pickerProjects.filter(
             (project) => !isScratchProject(project, scratchWorkspaceRootFor(project.environmentId)),
           ),
@@ -1337,16 +1386,7 @@ function OpenCommandPaletteDialog(props: {
             };
             return (
               <span className="flex min-w-0 items-center gap-1">
-                <span className="inline-flex min-w-0 items-center gap-1">
-                  {location.kind === "remote" ? (
-                    <EnvironmentMachineIcon
-                      aria-hidden
-                      kind={location.machine}
-                      className={COMMAND_PALETTE_META_ICON_CLASS}
-                    />
-                  ) : null}
-                  <span className="truncate">{location.label}</span>
-                </span>
+                <EnvironmentLocationLabel location={location} />
                 <CommandPaletteMetaDot />
                 <span className="truncate">{project.workspaceRoot}</span>
               </span>
@@ -1369,19 +1409,7 @@ function OpenCommandPaletteDialog(props: {
             );
           },
         }),
-        ...(scratchTargetEnvironmentId === null
-          ? []
-          : [
-              {
-                kind: "action" as const,
-                value: "new-thread-in:no-project",
-                searchTerms: ["no project", "without project", "none"],
-                title: "No project",
-                icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
-                shortcutCommand: "chat.newWithoutProject" as const,
-                run: () => startScratchThread(scratchTargetEnvironmentId),
-              },
-            ]),
+        ...scratchThreadItems,
       ]),
     [
       contextualProjectRef,
@@ -1389,9 +1417,8 @@ function OpenCommandPaletteDialog(props: {
       pickerProjects,
       projectEnvironmentLocationById,
       projectGroupByTargetKey,
-      scratchTargetEnvironmentId,
+      scratchThreadItems,
       scratchWorkspaceRootFor,
-      startScratchThread,
     ],
   );
 
@@ -1917,7 +1944,9 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  if (scratchTargetEnvironmentId !== null) {
+  // One machine offers threads without a project: start there. Several, or
+  // only machines other than the current one: the user picks which.
+  if (scratchThreadItems.length === 1 && scratchTargetEnvironmentId !== null) {
     actionItems.push({
       kind: "action",
       value: "action:new-thread-without-project",
@@ -1926,6 +1955,16 @@ function OpenCommandPaletteDialog(props: {
       icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "chat.newWithoutProject",
       run: () => startScratchThread(scratchTargetEnvironmentId),
+    });
+  } else if (scratchThreadItems.length > 0) {
+    actionItems.push({
+      kind: "submenu",
+      value: "action:new-thread-without-project",
+      searchTerms: ["new thread", "no project", "without project", "none", "chat"],
+      title: "New thread without a project...",
+      icon: <MessageSquareDashedIcon className={ITEM_ICON_CLASS} />,
+      addonIcon: <MessageSquareDashedIcon className={ADDON_ICON_CLASS} />,
+      groups: [{ value: "environments", label: "Environments", items: scratchThreadItems }],
     });
   }
 
